@@ -1,0 +1,105 @@
+apiVersion: apps/v1 
+kind: Deployment
+metadata:
+  name: hornet
+spec:
+  selector:
+    matchLabels:
+      app: hornet
+      tier: backend
+  replicas: {{ .Values.hornet.replicas }}
+  template:
+    metadata:
+      labels:
+        app: hornet
+        tier: backend
+    spec:
+      # hostNetwork: true
+      # dnsPolicy: ClusterFirstWithHostNet
+      hostAliases:
+      - ip: "10.100.0.100"
+        hostnames:
+        - "entry.node"   
+      hostname: hornet
+      containers:
+      - name: hornet-node
+        image: {{ .Values.hornet.image.repository }}:{{ .Values.hornet.image.tag }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        # - "nslookup entry.default.svc.cluster.local | awk '{if (/^Name/) {N=$2;getline;A=$2;print A,N}}' >> /etc/hosts && ./hornet -c conf/config"
+        - "./hornet -c conf/config"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/conf
+        - name: data-volume
+          mountPath: /app/data
+
+        livenessProbe:
+          tcpSocket:
+            port: {{ .Values.hornet.ports.api }}
+        ports:
+        - name: api
+          containerPort: {{ .Values.hornet.ports.api }}
+        - name: peering
+          containerPort: {{ .Values.hornet.ports.peering }}
+      
+
+      initContainers:
+
+      # Generating snapshot file
+      - name: generate-snapshot
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "sleep 30 && echo -n $SEED > seed.txt && cp seed.txt snapshot.csv && echo -n ';2779530283277761' >> snapshot.csv && cat snapshot.csv"
+#        - "cat /dev/urandom | LC_ALL=C tr -dc 'A-Z9' | fold -w 81 | head -n 1 | tr -d '\n' > seed.txt && cp seed.txt snapshot.csv && echo -n ';2779530283277761' >> snapshot.csv && cat snapshot.csv"
+        env:
+        - name: SEED
+          valueFrom:
+            secretKeyRef:
+              name: seed
+              key: seed
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+      
+      
+      # Modifying configuration file via configMap
+      - name: config
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /conf
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "echo $ENTRY_SEED && ENTRYNODE=$(echo $ENTRY_SEED)@entry.node:14626 && apk add jq && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /config-configmap/config.json > config.json && cat config.json"
+        env:
+        - name: ENTRY_SEED
+          valueFrom:
+            secretKeyRef:
+              name: entry-seed
+              key: entry-seed
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        - name: config-volume
+          mountPath: /conf 
+        - name: hornet-config-volume
+          mountPath: /config-configmap  
+
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+
+      - name: config-volume
+        emptyDir: {}
+
+      - name: hornet-config-volume
+        configMap:
+          name: hornet-config

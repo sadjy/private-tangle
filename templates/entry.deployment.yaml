@@ -1,0 +1,181 @@
+# service-account.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internal-entry-kubectl
+
+---
+# role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: entry-secret
+rules:
+  - apiGroups: [""]
+    resources:
+      - secrets
+    verbs:
+      - create
+      - delete
+
+---
+# role-binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: entry-secret-to-sa
+subjects:
+  - kind: ServiceAccount
+    name: internal-entry-kubectl
+roleRef:
+  kind: Role
+  name: entry-secret
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1 
+kind: Deployment
+metadata:
+  name: entry
+spec:
+  selector:
+    matchLabels:
+      app: entry
+      tier: backend
+  replicas: {{ .Values.entry.replicas }}
+  template:
+    metadata:
+      labels:
+        app: entry
+        role: entry
+        tier: backend
+    spec:
+      # hostNetwork: true
+      # dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: internal-entry-kubectl
+      hostname: entry
+      containers:
+      - name: entry-node
+        image: {{ .Values.entry.image.repository }}:{{ .Values.entry.image.tag }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "./hornet -c conf/config | grep PublicKey | cut -d '=' -f 4 | tee data/entry.txt"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/conf
+        - name: data-volume
+          mountPath: /app/data
+
+        livenessProbe:
+          initialDelaySeconds: 60
+          tcpSocket:
+            port: {{ .Values.hornet.ports.api }}
+        ports:
+        - name: api
+          containerPort: {{ .Values.hornet.ports.api }}
+        - name: autopeering
+          containerPort: {{ .Values.entry.ports.autopeering }}
+          protocol: UDP
+
+      # Creating secret
+      - name: entry-secret
+        image: bitnami/kubectl
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "cat entry.txt && kubectl delete secret entry-seed || true && kubectl create secret generic entry-seed --from-file=entry-seed=entry.txt"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+
+      # # Adding the entrynode value the config files
+      # - name: generate-config-files
+      #   image: alpine
+      #   imagePullPolicy: {{ .Values.imagePullPolicy }}
+      #   workingDir: /data
+      #   command: ["/bin/sh"]
+      #   args:
+      #   - "-c"
+      #   - "cat entry.txt && apk add jq && ENTRYNODE=$(cat entry.txt)@entry.default.svc.cluster.local:14626 && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /coo-configmap/config.json > coo-config.json && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /hornet-configmap/config.json > hornet-config.json && cat coo-config.json"
+      #   volumeMounts:
+      #   - name: data-volume
+      #     mountPath: /data        
+      #   - name: coo-config-volume
+      #     mountPath: /coo-configmap          
+      #   - name: hornet-config-volume
+      #     mountPath: /hornet-configmap 
+
+      # # Updating configmaps
+      # - name: update-configmaps
+      #   image: bitnami/kubectl
+      #   imagePullPolicy: {{ .Values.imagePullPolicy }}
+      #   workingDir: /data
+      #   command: ["/bin/sh"]
+      #   args:
+      #   - "-c"
+      #   - "kubectl create configmap coo-config --from-file=config.json=coo-config.json --dry-run=client -o yaml | kubectl replace -f -" # kubectl create configmap hornet-config --from-file=config.json=hornet-config.json --dry-run=client -o yaml | kubectl replace -f -"
+      #   # - "echo trash"
+      #   volumeMounts:
+      #   - name: data-volume
+      #     mountPath: /data
+
+
+      initContainers:        
+      # Generating autopeering seed
+      - name: generate-seed
+        image: {{ .Values.entry.image.repository }}:{{ .Values.entry.image.tag }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "/app/hornet tool seedgen | cut -d ' ' -f 5 | tee seed.txt"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+
+      # Modifying configuration file via configMap
+      - name: config
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "apk add jq && jq --arg seed $(cat data/seed.txt) '.network .autopeering .seed = $seed' /config-configmap/config.json > conf/config.json"
+        # - "sleep 8 && apk add jq && jq --arg seed $(cat data/seed.txt) '.network .autopeering .seed = $seed' /config-configmap/config.json > conf/tmp.json && jq --arg cooAddr $TREE_ROOT '.coordinator .address = $cooAddr' conf/tmp.json > conf/config.json"
+        # env:
+        # - name: TREE_ROOT
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: tree-root
+        #       key: tree-root
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        - name: config-volume
+          mountPath: /app/conf 
+        - name: entry-config-volume
+          mountPath: /config-configmap  
+
+
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+      - name: config-volume
+        emptyDir: {}
+
+      - name: entry-config-volume
+        configMap:
+          name: entry-config
+      - name: coo-config-volume
+        configMap:
+          name: coo-config
+      - name: hornet-config-volume
+        configMap:
+          name: hornet-config

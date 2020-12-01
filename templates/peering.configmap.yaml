@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: peering
+data:
+  peering.json: |
+    {
+      "acceptAnyConnection": false,
+      "maxPeers": 1,
+      "peers": [
+{{ range $index, $service := (lookup "v1" "Pod" "default" "").items }}
+        {
+            "identity": "",
+            "alias": "",
+            "preferIPv6": false
+        }
+{{ end }}    
+      ]
+    }

@@ -1,0 +1,247 @@
+# # service-account.yaml
+# apiVersion: v1
+# kind: ServiceAccount
+# metadata:
+#   name: internal-coo-kubectl
+
+# ---
+# # role.yaml
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: Role
+# metadata:
+#   name: create-secret
+# rules:
+#   - apiGroups: [""]
+#     resources:
+#       - secrets
+#     verbs:
+#       - create
+
+# ---
+# # role-binding.yaml
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: create-secret-to-sa
+# subjects:
+#   - kind: ServiceAccount
+#     name: internal-coo-kubectl
+# roleRef:
+#   kind: Role
+#   name: create-secret
+#   apiGroup: rbac.authorization.k8s.io
+
+# ---
+apiVersion: apps/v1 
+kind: Deployment
+metadata:
+  name: coo
+spec:
+  selector:
+    matchLabels:
+      app: coo
+      tier: backend
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: coo
+        tier: backend
+    spec:
+      # serviceAccountName: internal-coo-kubectl
+      # hostNetwork: true
+      # dnsPolicy: ClusterFirstWithHostNet
+      hostname: coo
+      hostAliases:
+      - ip: "10.100.0.100"
+        hostnames:
+        - "entry.node"   
+      containers:
+      - name: coo-node
+        image: {{ .Values.coo.image.repository }}:{{ .Values.coo.image.tag }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "cat /etc/hosts && COO_SEED=$(cat data/coo-seed.txt | tr -d '\n') ./hornet -c conf/config"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/conf
+        - name: data-volume
+          mountPath: /app/data
+
+        livenessProbe:
+          tcpSocket:
+            port: {{ .Values.coo.ports.api }}
+        ports:
+        - name: api
+          containerPort: {{ .Values.coo.ports.api }}
+        - name: peering
+          containerPort: {{ .Values.coo.ports.peering }}
+
+      initContainers:
+      # Cloning iota.go lib
+      - name: git-cloner
+        image: alpine/git
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        args:
+        - clone
+        - https://github.com/iotaledger/iota.go.git
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+                
+      # Building merkle tree calculator tool
+      - name: merkle-calculator-builder
+        image: golang
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data/iota.go/tools/merkle_calculator 
+        command: ["go"]
+        args:
+        - build
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+
+      # Generating random seed
+      - name: generate-snapshot
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+#        - "export SEED=TPLVIXAZYMLCGRNOOOMAGZGMYYCOONKCJUQGFSBPQIMLKFAXULZPWOLDTXHNIK9XVEMTQCFZ9AKJABNO9 && 
+        - "echo -n $SEED > seed.txt && cp seed.txt snapshot.csv && echo -n ';2779530283277761' >> snapshot.csv && cat snapshot.csv"
+#        - "echo $(cat /dev/urandom | LC_ALL=C tr -dc 'A-Z9' | fold -w 80 | head -n 1)9 > seed.txt && cp seed.txt snapshot.csv && echo -n ';2779530283277761' >> snapshot.csv && cat snapshot.csv"
+        env:
+        - name: SEED
+          valueFrom:
+            secretKeyRef:
+              name: tangle-secrets
+              key: seed
+        - name: GODEBUG
+          value: "netdns=cgo"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        
+      # Generating merkle tree
+      - name: merkle-tree
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "sleep 15 && echo $(cat /dev/urandom | LC_ALL=C tr -dc 'A-Z9' | fold -w 80 | head -n 1)9 > coo-seed.txt && /data/iota.go/tools/merkle_calculator/merkle_calculator -depth {{ .Values.coo.params.depth }} -securityLevel {{ .Values.coo.params.securityLevel }} -seed $(cat coo-seed.txt) -parallelism 10 -output coordinator.tree 2>&1 >error.log | grep root | cut -d ' ' -f 6 | tee tree-root.txt"
+        env:
+        - name: SEED
+          valueFrom:
+            secretKeyRef:
+              name: seed
+              key: seed
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data  
+
+      # Modifying configuration file via configMap
+      - name: config
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /conf
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "echo $ENTRY_SEED && apk add jq && jq --arg cooAddr $(cat /data/tree-root.txt) '.coordinator .address = $cooAddr' /config-configmap/config.json > tmp.json && ENTRYNODE=$(echo $ENTRY_SEED)@entry.node:14626 && echo $ENTRYNODE && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' tmp.json > config.json && cat config.json"
+        env:
+        - name: ENTRY_SEED
+          valueFrom:
+            secretKeyRef:
+              name: entry-seed
+              key: entry-seed
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        - name: config-volume
+          mountPath: /conf 
+        - name: coo-config-volume
+          mountPath: /config-configmap  
+
+      # # Creating secret
+      # - name: tree-root-secret
+      #   image: bitnami/kubectl
+      #   imagePullPolicy: {{ .Values.imagePullPolicy }}
+      #   workingDir: /data
+      #   command: ["/bin/sh"]
+      #   args:
+      #   - "-c"
+      #   - "kubectl create secret generic tree-root --from-file=tree-root=./tree-root.txt"
+      #   volumeMounts:
+      #   - name: data-volume
+      #     mountPath: /data
+
+      # Setting permissions
+      - name: perm
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "chown -R 39999 /app"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        - name: config-volume
+          mountPath: /app/conf 
+
+      # DEBUG
+      - name: debug
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "cat conf/config.json"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        - name: config-volume
+          mountPath: /app/conf 
+        - name: coo-peering-volume
+          mountPath: /app 
+
+      # Bootstrapping the coordinator
+      - name: coo-bootstrap
+        image: {{ .Values.coo.image.repository }}:{{ .Values.coo.image.tag }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /app
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "COO_SEED=$(cat data/coo-seed.txt | tr -d '\n') ./hornet -c conf/config --cooBootstrap & sleep 20 && pkill -SIGTERM hornet && sleep 7"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /app/data
+        - name: config-volume
+          mountPath: /app/conf 
+      
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+      - name: config-volume
+        emptyDir: {}
+
+      - name: coo-config-volume
+        configMap:
+          name: coo-config
+      - name: coo-peering-volume
+        configMap:
+          name: coo-peering
+          items:
+          - key: peering.json
+            path: peering.json
