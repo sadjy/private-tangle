@@ -2,12 +2,11 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-imagePullPolicy: Always
+imagePullPolicy: IfNotPresent
 
 coo:
   image:
-    repository: sadjy/devhornet2
-    # Replaced official image with custom image with curl, jq and tcpdump for debug
+    repository: iotaledger/hornet
     tag: latest
   params:
     securityLevel: 2
@@ -19,7 +18,7 @@ coo:
 
 hornet:
   image:
-    repository: sadjy/devhornet2
+    repository: iotaledger/hornet
     tag: latest
   replicas: 2
   ports:
@@ -32,7 +31,7 @@ hornet:
 
 entry:
   image:
-    repository: sadjy/devhornet2
+    repository: iotaledger/hornet
     tag: latest
   replicas: 2
   ports:

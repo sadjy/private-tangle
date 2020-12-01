@@ -9,4 +9,3 @@ kubectl delete deployment entry
 kubectl delete configmap entry-config
 kubectl delete configmap hornet-config
 kubectl delete configmap coo-config
-kubectl delete secret entry-seed

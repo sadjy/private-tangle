@@ -122,8 +122,6 @@ spec:
             secretKeyRef:
               name: tangle-secrets
               key: seed
-        - name: GODEBUG
-          value: "netdns=cgo"
         volumeMounts:
         - name: data-volume
           mountPath: /data
@@ -155,13 +153,7 @@ spec:
         command: ["/bin/sh"]
         args:
         - "-c"
-        - "echo $ENTRY_SEED && apk add jq && jq --arg cooAddr $(cat /data/tree-root.txt) '.coordinator .address = $cooAddr' /config-configmap/config.json > tmp.json && ENTRYNODE=$(echo $ENTRY_SEED)@entry.node:14626 && echo $ENTRYNODE && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' tmp.json > config.json && cat config.json"
-        env:
-        - name: ENTRY_SEED
-          valueFrom:
-            secretKeyRef:
-              name: entry-seed
-              key: entry-seed
+        - "cat /config-configmap/config.json && apk add jq && jq --arg cooAddr $(cat /data/tree-root.txt) '.coordinator .address = $cooAddr' /config-configmap/config.json > config.json"
         volumeMounts:
         - name: data-volume
           mountPath: /data

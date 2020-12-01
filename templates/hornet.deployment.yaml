@@ -16,11 +16,11 @@ spec:
     spec:
       # hostNetwork: true
       # dnsPolicy: ClusterFirstWithHostNet
+      hostname: hornet
       hostAliases:
       - ip: "10.100.0.100"
         hostnames:
-        - "entry.node"   
-      hostname: hornet
+        - "entry.node"
       containers:
       - name: hornet-node
         image: {{ .Values.hornet.image.repository }}:{{ .Values.hornet.image.tag }}
@@ -69,37 +69,16 @@ spec:
         - name: data-volume
           mountPath: /data
       
-      
-      # Modifying configuration file via configMap
-      - name: config
-        image: alpine
-        imagePullPolicy: {{ .Values.imagePullPolicy }}
-        workingDir: /conf
-        command: ["/bin/sh"]
-        args:
-        - "-c"
-        - "echo $ENTRY_SEED && ENTRYNODE=$(echo $ENTRY_SEED)@entry.node:14626 && apk add jq && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /config-configmap/config.json > config.json && cat config.json"
-        env:
-        - name: ENTRY_SEED
-          valueFrom:
-            secretKeyRef:
-              name: entry-seed
-              key: entry-seed
-        volumeMounts:
-        - name: data-volume
-          mountPath: /data
-        - name: config-volume
-          mountPath: /conf 
-        - name: hornet-config-volume
-          mountPath: /config-configmap  
-
       volumes:
       - name: data-volume
         emptyDir: {}
 
       - name: config-volume
-        emptyDir: {}
-
-      - name: hornet-config-volume
         configMap:
           name: hornet-config
+      - name: peering-volume
+        configMap:
+          name: peering
+          items:
+          - key: peering.json
+            path: peering.json

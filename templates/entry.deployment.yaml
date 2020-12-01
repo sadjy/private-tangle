@@ -9,27 +9,25 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: entry-secret
+  name: configmap-update
 rules:
   - apiGroups: [""]
-    resources:
-      - secrets
-    verbs:
-      - create
-      - delete
+    resources: ["configmaps"]
+    resourceNames: ["coo-config", "hornet-config"]  
+    verbs: ["update", "get", "create"]
 
 ---
 # role-binding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: entry-secret-to-sa
+  name: configmap-update-to-sa
 subjects:
   - kind: ServiceAccount
     name: internal-entry-kubectl
 roleRef:
   kind: Role
-  name: entry-secret
+  name: configmap-update
   apiGroup: rbac.authorization.k8s.io
 
 ---
@@ -80,52 +78,58 @@ spec:
           containerPort: {{ .Values.entry.ports.autopeering }}
           protocol: UDP
 
-      # Creating secret
-      - name: entry-secret
+      # Adding the entrynode value the config files
+      - name: generate-config-files
+        image: alpine
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        workingDir: /data
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "cat entry.txt && apk add jq && ENTRYNODE=$(cat entry.txt)@entry.node:14626 && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /coo-configmap/config.json > coo-config.json && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /hornet-configmap/config.json > hornet-config.json && cat coo-config.json"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data        
+        - name: coo-config-volume
+          mountPath: /coo-configmap          
+        - name: hornet-config-volume
+          mountPath: /hornet-configmap 
+
+      # Updating configmaps
+      - name: update-configmaps
         image: bitnami/kubectl
         imagePullPolicy: {{ .Values.imagePullPolicy }}
         workingDir: /data
         command: ["/bin/sh"]
         args:
         - "-c"
-        - "cat entry.txt && kubectl delete secret entry-seed || true && kubectl create secret generic entry-seed --from-file=entry-seed=entry.txt"
+        - "kubectl create configmap coo-config --from-file=config.json=coo-config.json --dry-run=client -o yaml | kubectl replace -f -" # kubectl create configmap hornet-config --from-file=config.json=hornet-config.json --dry-run=client -o yaml | kubectl replace -f -"
+        # - "echo trash"
         volumeMounts:
         - name: data-volume
           mountPath: /data
 
-      # # Adding the entrynode value the config files
-      # - name: generate-config-files
-      #   image: alpine
-      #   imagePullPolicy: {{ .Values.imagePullPolicy }}
-      #   workingDir: /data
-      #   command: ["/bin/sh"]
-      #   args:
-      #   - "-c"
-      #   - "cat entry.txt && apk add jq && ENTRYNODE=$(cat entry.txt)@entry.default.svc.cluster.local:14626 && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /coo-configmap/config.json > coo-config.json && jq --arg entryKey $ENTRYNODE '.network .autopeering .entryNodes |= .+ [$entryKey]' /hornet-configmap/config.json > hornet-config.json && cat coo-config.json"
-      #   volumeMounts:
-      #   - name: data-volume
-      #     mountPath: /data        
-      #   - name: coo-config-volume
-      #     mountPath: /coo-configmap          
-      #   - name: hornet-config-volume
-      #     mountPath: /hornet-configmap 
-
-      # # Updating configmaps
-      # - name: update-configmaps
-      #   image: bitnami/kubectl
-      #   imagePullPolicy: {{ .Values.imagePullPolicy }}
-      #   workingDir: /data
-      #   command: ["/bin/sh"]
-      #   args:
-      #   - "-c"
-      #   - "kubectl create configmap coo-config --from-file=config.json=coo-config.json --dry-run=client -o yaml | kubectl replace -f -" # kubectl create configmap hornet-config --from-file=config.json=hornet-config.json --dry-run=client -o yaml | kubectl replace -f -"
-      #   # - "echo trash"
-      #   volumeMounts:
-      #   - name: data-volume
-      #     mountPath: /data
-
-
-      initContainers:        
+      initContainers:
+#       # Generating snapshot file
+#       - name: generate-snapshot
+#         image: alpine
+#         imagePullPolicy: {{ .Values.imagePullPolicy }}
+#         workingDir: /data
+#         command: ["/bin/sh"]
+#         args:
+#         - "-c"
+#         - "sleep 40 && echo -n $SEED > seed.txt && cp seed.txt snapshot.csv && echo -n ';2779530283277761' >> snapshot.csv && cat snapshot.csv"
+# #        - "cat /dev/urandom | LC_ALL=C tr -dc 'A-Z9' | fold -w 81 | head -n 1 | tr -d '\n' > seed.txt && cp seed.txt snapshot.csv && echo -n ';2779530283277761' >> snapshot.csv && cat snapshot.csv"
+#         env:
+#         - name: SEED
+#           valueFrom:
+#             secretKeyRef:
+#               name: seed
+#               key: seed
+#         volumeMounts:
+#         - name: data-volume
+#           mountPath: /data
+        
       # Generating autopeering seed
       - name: generate-seed
         image: {{ .Values.entry.image.repository }}:{{ .Values.entry.image.tag }}
@@ -162,8 +166,7 @@ spec:
           mountPath: /app/conf 
         - name: entry-config-volume
           mountPath: /config-configmap  
-
-
+      
       volumes:
       - name: data-volume
         emptyDir: {}
