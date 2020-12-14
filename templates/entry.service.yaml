@@ -8,7 +8,11 @@ metadata:
     tier: backend
 spec:
   ports:
-  - port: {{ .Values.entry.ports.autopeering }}
+  - name: autopeering
+    port: {{ .Values.entry.ports.autopeering }}
+    targetPort: {{ .Values.entry.ports.autopeering }}
+  - name: autopeering2
+    port: {{ .Values.entry.ports.autopeering }}
     targetPort: {{ .Values.entry.ports.autopeering }}
     protocol: UDP
   selector:

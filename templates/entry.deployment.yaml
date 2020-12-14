@@ -79,6 +79,8 @@ spec:
         - name: autopeering
           containerPort: {{ .Values.entry.ports.autopeering }}
           protocol: UDP
+        - name: autopeering2
+          containerPort: {{ .Values.entry.ports.autopeering }}
 
       # Creating secret
       - name: entry-secret
